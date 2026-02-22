@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -21,7 +23,10 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
     public HttpUserTablesTransport(UserTablesContextOptions options)
     {
         _options = options;
-        _httpClient = options.HttpClient ?? new HttpClient();
+        _httpClient = options.HttpClient ?? new HttpClient(new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
+        });
     }
 
     public async Task<IReadOnlyList<ApiUserTable>> ListUserTablesAsync(string? search, CancellationToken cancellationToken)
@@ -38,7 +43,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseUserTables(json.RootElement);
     }
 
@@ -54,7 +59,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseSingleUserTable(json.RootElement)
             ?? throw new InvalidOperationException("API response did not include a user table payload.");
     }
@@ -70,7 +75,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         }
 
         await EnsureSuccessAsync(response).ConfigureAwait(false);
-        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseSingleRow(json.RootElement);
     }
 
@@ -94,7 +99,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         using var response = await SendWithRetryAsync(httpRequest, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseRows(json.RootElement);
     }
 
@@ -106,7 +111,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseSingleRow(json.RootElement)
             ?? throw new InvalidOperationException("API response did not include a row payload.");
     }
@@ -119,7 +124,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseSingleRow(json.RootElement)
             ?? throw new InvalidOperationException("API response did not include a row payload.");
     }
@@ -137,7 +142,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseColumns(json.RootElement);
     }
 
@@ -156,7 +161,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
         return ParseSingleColumn(json.RootElement)
             ?? throw new InvalidOperationException("API response did not include a column payload.");
     }
@@ -259,6 +264,71 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
             $"User Tables API call failed with status {(int)response.StatusCode} ({response.StatusCode}).",
             response.StatusCode,
             body);
+    }
+
+    private static async Task<JsonDocument> ParseJsonDocumentAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var payload = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+        var decoded = DecodeResponsePayload(payload, response.Content.Headers.ContentEncoding);
+        return JsonDocument.Parse(decoded);
+    }
+
+    private static byte[] DecodeResponsePayload(byte[] payload, ICollection<string> encodings)
+    {
+        if (payload.Length == 0)
+        {
+            return payload;
+        }
+
+        var decoded = payload;
+        var applied = encodings
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim().ToLowerInvariant())
+            .ToArray();
+
+        if (applied.Length > 0)
+        {
+            foreach (var encoding in applied.Reverse())
+            {
+                decoded = TryDecodeByEncoding(decoded, encoding);
+            }
+
+            return decoded;
+        }
+
+        if (decoded.Length >= 2 && decoded[0] == 0x1F && decoded[1] == 0x8B)
+        {
+            return TryDecodeByEncoding(decoded, "gzip");
+        }
+
+        return decoded;
+    }
+
+    private static byte[] TryDecodeByEncoding(byte[] payload, string encoding)
+    {
+        try
+        {
+            return encoding switch
+            {
+                "gzip" => Decompress(payload, input => new GZipStream(input, CompressionMode.Decompress)),
+                "deflate" => Decompress(payload, input => new DeflateStream(input, CompressionMode.Decompress)),
+                "br" => Decompress(payload, input => new BrotliStream(input, CompressionMode.Decompress)),
+                _ => payload
+            };
+        }
+        catch (InvalidDataException)
+        {
+            return payload;
+        }
+    }
+
+    private static byte[] Decompress(byte[] payload, Func<Stream, Stream> streamFactory)
+    {
+        using var input = new MemoryStream(payload);
+        using var decoded = streamFactory(input);
+        using var output = new MemoryStream();
+        decoded.CopyTo(output);
+        return output.ToArray();
     }
 
     private static string BuildQueryString(IReadOnlyDictionary<string, string?> query)
