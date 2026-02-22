@@ -49,7 +49,7 @@ internal sealed class EntityMetadata
     }
 
     public Type EntityType { get; }
-    public string TableId { get; }
+    public string TableId { get; private set; }
     public PropertyInfo KeyProperty { get; }
 
     public IReadOnlyList<ExpectedColumnSchema> ExpectedColumns => _properties
@@ -87,6 +87,16 @@ internal sealed class EntityMetadata
         }
     }
 
+    public void SetTableId(string tableId)
+    {
+        if (string.IsNullOrWhiteSpace(tableId))
+        {
+            throw new ArgumentException("Table id cannot be null or whitespace.", nameof(tableId));
+        }
+
+        TableId = tableId;
+    }
+
     public Dictionary<string, object?> ToRowData(object entity)
     {
         var row = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -102,6 +112,13 @@ internal sealed class EntityMetadata
             if (property.AutoJson && value is not null)
             {
                 row[property.ColumnName] = JsonSerializer.Serialize(value, property.Property.PropertyType, _jsonOptions);
+                continue;
+            }
+
+            var targetType = Nullable.GetUnderlyingType(property.Property.PropertyType) ?? property.Property.PropertyType;
+            if (targetType.IsEnum && value is not null)
+            {
+                row[property.ColumnName] = value.ToString();
                 continue;
             }
 
@@ -185,6 +202,29 @@ internal sealed class EntityMetadata
 
         if (value is JsonElement element)
         {
+            if (autoJson && element.ValueKind == JsonValueKind.String)
+            {
+                var elementJsonText = element.GetString();
+                if (!string.IsNullOrWhiteSpace(elementJsonText))
+                {
+                    return JsonSerializer.Deserialize(elementJsonText, propertyType, options);
+                }
+
+                return null;
+            }
+
+            var targetEnumType = Nullable.GetUnderlyingType(propertyType) ?? propertyType;
+            if (targetEnumType.IsEnum && element.ValueKind == JsonValueKind.String)
+            {
+                var enumName = element.GetString();
+                if (!string.IsNullOrWhiteSpace(enumName))
+                {
+                    return Enum.Parse(targetEnumType, enumName, ignoreCase: true);
+                }
+
+                return null;
+            }
+
             return JsonSerializer.Deserialize(element.GetRawText(), propertyType, options);
         }
 

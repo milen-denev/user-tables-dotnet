@@ -21,7 +21,8 @@ internal sealed class SchemaAutoMigrator(IUserTablesTransport transport)
 
         foreach (var metadata in entities)
         {
-            var existing = await transport.ListColumnsAsync(metadata.TableId, cancellationToken).ConfigureAwait(false);
+            var resolvedTableId = await EnsureTableIdAsync(metadata, cancellationToken).ConfigureAwait(false);
+            var existing = await transport.ListColumnsAsync(resolvedTableId, cancellationToken).ConfigureAwait(false);
             var existingByName = existing.ToDictionary(column => column.Name, StringComparer.OrdinalIgnoreCase);
             var desiredByName = metadata.ExpectedColumns.ToDictionary(column => column.Name, StringComparer.OrdinalIgnoreCase);
 
@@ -30,7 +31,7 @@ internal sealed class SchemaAutoMigrator(IUserTablesTransport transport)
                 if (!existingByName.TryGetValue(expected.Name, out var current))
                 {
                     await transport.CreateColumnAsync(
-                            metadata.TableId,
+                            resolvedTableId,
                             new CreateColumnRequest(expected.Name, expected.ValueTypeKey, expected.Required),
                             cancellationToken)
                         .ConfigureAwait(false);
@@ -48,7 +49,7 @@ internal sealed class SchemaAutoMigrator(IUserTablesTransport transport)
 
                     await transport.DeleteColumnAsync(current.Id, cancellationToken).ConfigureAwait(false);
                     await transport.CreateColumnAsync(
-                            metadata.TableId,
+                            resolvedTableId,
                             new CreateColumnRequest(expected.Name, expected.ValueTypeKey, expected.Required),
                             cancellationToken)
                         .ConfigureAwait(false);
@@ -78,5 +79,30 @@ internal sealed class SchemaAutoMigrator(IUserTablesTransport transport)
         }
 
         return new SchemaMigrationReport(added, removed, recreated, skipped);
+    }
+
+    private async Task<string> EnsureTableIdAsync(EntityMetadata metadata, CancellationToken cancellationToken)
+    {
+        if (Guid.TryParse(metadata.TableId, out _))
+        {
+            return metadata.TableId;
+        }
+
+        var mappedName = metadata.TableId.Trim();
+
+        var existing = await transport.ListUserTablesAsync(mappedName, cancellationToken).ConfigureAwait(false);
+        var matched = existing.FirstOrDefault(table => string.Equals(table.Name, mappedName, StringComparison.OrdinalIgnoreCase));
+        if (matched is not null)
+        {
+            metadata.SetTableId(matched.Id);
+            return matched.Id;
+        }
+
+        var created = await transport
+            .CreateUserTableAsync(new CreateUserTableRequest(mappedName), cancellationToken)
+            .ConfigureAwait(false);
+
+        metadata.SetTableId(created.Id);
+        return created.Id;
     }
 }

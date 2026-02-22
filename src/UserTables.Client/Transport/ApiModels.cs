@@ -30,11 +30,19 @@ internal sealed record ApiColumn(
     bool Required,
     bool IsAutoRelation);
 
+internal sealed record ApiUserTable(
+    string Id,
+    string Name);
+
 internal sealed record CreateColumnRequest(
     string Name,
     string ValueType,
     bool Required,
     bool IsActive = true,
+    string Description = "");
+
+internal sealed record CreateUserTableRequest(
+    string Name,
     string Description = "");
 
 public sealed record SchemaMigrationReport(

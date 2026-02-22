@@ -24,6 +24,41 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         _httpClient = options.HttpClient ?? new HttpClient();
     }
 
+    public async Task<IReadOnlyList<ApiUserTable>> ListUserTablesAsync(string? search, CancellationToken cancellationToken)
+    {
+        var query = new Dictionary<string, string?>
+        {
+            ["search"] = search,
+            ["page"] = "1",
+            ["per_page"] = "100"
+        };
+
+        var path = $"/api/user-tables{BuildQueryString(query)}";
+        using var request = CreateRequest(HttpMethod.Get, path);
+        using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response).ConfigureAwait(false);
+
+        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        return ParseUserTables(json.RootElement);
+    }
+
+    public async Task<ApiUserTable> CreateUserTableAsync(CreateUserTableRequest requestModel, CancellationToken cancellationToken)
+    {
+        using var request = CreateRequest(HttpMethod.Post, "/api/user-tables");
+        request.Content = BuildJsonContent(new Dictionary<string, object?>
+        {
+            ["name"] = requestModel.Name,
+            ["description"] = requestModel.Description
+        });
+
+        using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response).ConfigureAwait(false);
+
+        using var json = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false), cancellationToken: cancellationToken).ConfigureAwait(false);
+        return ParseSingleUserTable(json.RootElement)
+            ?? throw new InvalidOperationException("API response did not include a user table payload.");
+    }
+
     public async Task<ApiRow?> GetRowAsync(string tableId, string rowId, CancellationToken cancellationToken)
     {
         using var request = CreateRequest(HttpMethod.Get, $"/api/user-tables/{tableId}/rows/{rowId}");
@@ -234,6 +269,62 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
             .ToArray();
 
         return pairs.Length == 0 ? string.Empty : $"?{string.Join("&", pairs)}";
+    }
+
+    private static IReadOnlyList<ApiUserTable> ParseUserTables(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("data", out var dataNode))
+        {
+            return [];
+        }
+
+        if (dataNode.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return dataNode.EnumerateArray()
+            .Select(ParseUserTable)
+            .Where(table => table is not null)
+            .Cast<ApiUserTable>()
+            .ToArray();
+    }
+
+    private static ApiUserTable? ParseSingleUserTable(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (root.TryGetProperty("data", out var dataNode))
+        {
+            return ParseUserTable(dataNode);
+        }
+
+        return ParseUserTable(root);
+    }
+
+    private static ApiUserTable? ParseUserTable(JsonElement node)
+    {
+        if (node.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        if (!node.TryGetProperty("id", out var idNode) || !node.TryGetProperty("name", out var nameNode))
+        {
+            return null;
+        }
+
+        var id = idNode.GetString();
+        var name = nameNode.GetString();
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        return new ApiUserTable(id!, name!);
     }
 
     private static IReadOnlyList<ApiRow> ParseRows(JsonElement root)
