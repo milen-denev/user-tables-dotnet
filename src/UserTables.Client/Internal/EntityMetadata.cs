@@ -10,15 +10,38 @@ namespace UserTables.Client.Internal;
 
 internal sealed class EntityMetadata
 {
+    private static readonly Type[] ScalarTypes =
+    [
+        typeof(string),
+        typeof(bool),
+        typeof(byte),
+        typeof(sbyte),
+        typeof(short),
+        typeof(ushort),
+        typeof(int),
+        typeof(uint),
+        typeof(long),
+        typeof(ulong),
+        typeof(float),
+        typeof(double),
+        typeof(decimal),
+        typeof(DateTime),
+        typeof(DateTimeOffset),
+        typeof(TimeSpan),
+        typeof(Guid)
+    ];
+
     private readonly IReadOnlyList<PropertyMetadata> _properties;
     private readonly IReadOnlyDictionary<string, string> _propertyToColumn;
+    private readonly JsonSerializerOptions _jsonOptions;
 
-    public EntityMetadata(Type entityType, string tableId, PropertyInfo keyProperty, IReadOnlyList<PropertyMetadata> properties)
+    public EntityMetadata(Type entityType, string tableId, PropertyInfo keyProperty, IReadOnlyList<PropertyMetadata> properties, JsonSerializerOptions jsonOptions)
     {
         EntityType = entityType;
         TableId = tableId;
         KeyProperty = keyProperty;
         _properties = properties;
+        _jsonOptions = jsonOptions;
         _propertyToColumn = properties.ToDictionary(
             property => property.Property.Name,
             property => property.ColumnName,
@@ -70,7 +93,19 @@ internal sealed class EntityMetadata
         foreach (var property in _properties)
         {
             var value = property.Property.GetValue(entity);
-            row[property.ColumnName] = property.Converter?.ToProvider(value) ?? value;
+            if (property.Converter is not null)
+            {
+                row[property.ColumnName] = property.Converter.ToProvider(value);
+                continue;
+            }
+
+            if (property.AutoJson && value is not null)
+            {
+                row[property.ColumnName] = JsonSerializer.Serialize(value, property.Property.PropertyType, _jsonOptions);
+                continue;
+            }
+
+            row[property.ColumnName] = value;
         }
 
         return row;
@@ -88,7 +123,8 @@ internal sealed class EntityMetadata
                 continue;
             }
 
-            var normalized = property.Converter?.FromProvider(value) ?? ConvertToPropertyType(property.Property.PropertyType, value, jsonOptions);
+            var normalized = property.Converter?.FromProvider(value)
+                ?? ConvertToPropertyType(property.Property.PropertyType, value, jsonOptions, property.AutoJson);
             if (property.Property.CanWrite)
             {
                 property.Property.SetValue(instance, normalized);
@@ -99,7 +135,7 @@ internal sealed class EntityMetadata
         return instance;
     }
 
-    public static EntityMetadata Build(Type entityType, IReadOnlyDictionary<Type, EntityTypeMapBuilder> configuredMaps)
+    public static EntityMetadata Build(Type entityType, IReadOnlyDictionary<Type, EntityTypeMapBuilder> configuredMaps, JsonSerializerOptions jsonOptions)
     {
         configuredMaps.TryGetValue(entityType, out var configured);
         var tableAttr = entityType.GetCustomAttribute<UserTableAttribute>();
@@ -128,17 +164,23 @@ internal sealed class EntityMetadata
             var columnName = configuredProperty?.ColumnName ?? columnAttr?.ColumnName ?? property.Name;
             var valueType = configuredProperty?.ValueType ?? InferValueType(property.PropertyType);
             var required = IsRequiredProperty(property, nullability);
-            propertyMaps.Add(new PropertyMetadata(property, columnName, configuredProperty?.Converter, ValueTypeToApiKey(valueType), required));
+            var autoJson = configuredProperty?.Converter is null && ShouldAutoJsonConvert(property.PropertyType);
+            propertyMaps.Add(new PropertyMetadata(property, columnName, configuredProperty?.Converter, ValueTypeToApiKey(valueType), required, autoJson));
         }
 
-        return new EntityMetadata(entityType, tableId!, keyProperty, propertyMaps);
+        return new EntityMetadata(entityType, tableId!, keyProperty, propertyMaps, jsonOptions);
     }
 
-    private static object? ConvertToPropertyType(Type propertyType, object? value, JsonSerializerOptions options)
+    private static object? ConvertToPropertyType(Type propertyType, object? value, JsonSerializerOptions options, bool autoJson)
     {
         if (value is null)
         {
             return null;
+        }
+
+        if (autoJson && value is string jsonText && !string.IsNullOrWhiteSpace(jsonText))
+        {
+            return JsonSerializer.Deserialize(jsonText, propertyType, options);
         }
 
         if (value is JsonElement element)
@@ -195,6 +237,22 @@ internal sealed class EntityMetadata
         return UserTableColumnValueType.Text;
     }
 
+    private static bool ShouldAutoJsonConvert(Type propertyType)
+    {
+        var targetType = Nullable.GetUnderlyingType(propertyType) ?? propertyType;
+        if (targetType.IsEnum)
+        {
+            return false;
+        }
+
+        if (ScalarTypes.Contains(targetType))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private static bool IsRequiredProperty(PropertyInfo property, NullabilityInfoContext nullability)
     {
         var type = property.PropertyType;
@@ -224,13 +282,14 @@ internal sealed class EntityMetadata
     }
 }
 
-internal sealed class PropertyMetadata(PropertyInfo property, string columnName, ValueConverter? converter, string valueTypeKey, bool required)
+internal sealed class PropertyMetadata(PropertyInfo property, string columnName, ValueConverter? converter, string valueTypeKey, bool required, bool autoJson)
 {
     public PropertyInfo Property { get; } = property;
     public string ColumnName { get; } = columnName;
     public ValueConverter? Converter { get; } = converter;
     public string ValueTypeKey { get; } = valueTypeKey;
     public bool Required { get; } = required;
+    public bool AutoJson { get; } = autoJson;
 }
 
 internal sealed record ExpectedColumnSchema(string Name, string ValueTypeKey, bool Required);

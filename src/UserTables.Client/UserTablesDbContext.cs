@@ -123,7 +123,7 @@ public abstract class UserTablesDbContext : IAsyncDisposable
 
     internal EntityMetadata ResolveMetadata(Type entityType)
     {
-        return _metadataCache.GetOrAdd(entityType, type => EntityMetadata.Build(type, _model));
+        return _metadataCache.GetOrAdd(entityType, type => EntityMetadata.Build(type, _model, ContextOptions.JsonSerializerOptions));
     }
 
     internal IUserTablesTransport Transport => _transport;
