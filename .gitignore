@@ -4,6 +4,7 @@
 **/Debug/
 **/Release/
 **/TestResults/
+**/nupkgs/
 *.user
 *.suo
 *.rsuser
