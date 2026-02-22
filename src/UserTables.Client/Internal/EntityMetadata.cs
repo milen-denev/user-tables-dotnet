@@ -271,7 +271,7 @@ internal sealed class EntityMetadata
 
         if (targetType == typeof(Guid))
         {
-            return UserTableColumnValueType.Relation;
+            return UserTableColumnValueType.Text;
         }
 
         return UserTableColumnValueType.Text;

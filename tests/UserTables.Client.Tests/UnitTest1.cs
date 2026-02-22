@@ -209,10 +209,20 @@ public class EntityMetadataJsonConversionTests
         Assert.Equal(CartState.CheckedOut, entity.State);
     }
 
+    [Fact]
+    public void Guid_Property_Defaults_To_Text_ValueType()
+    {
+        var metadata = EntityMetadata.Build(typeof(CartEntity), new Dictionary<Type, EntityTypeMapBuilder>(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        var column = Assert.Single(metadata.ExpectedColumns.Where(col => col.Name == "CompanyId"));
+        Assert.Equal("text", column.ValueTypeKey);
+    }
+
     [UserTable("CARTS")]
     private sealed class CartEntity
     {
         public Guid Id { get; set; }
+        public Guid CompanyId { get; set; }
         public OrderDataEntity? OrderData { get; set; }
         public List<string>? ProductNames { get; set; }
         public List<CartProduct>? Products { get; set; }
