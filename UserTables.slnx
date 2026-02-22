@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/UserTables.ConsoleSample/UserTables.ConsoleSample.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/UserTables.Client/UserTables.Client.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/UserTables.Client.Tests/UserTables.Client.Tests.csproj" />
+  </Folder>
+</Solution>

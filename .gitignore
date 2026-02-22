@@ -1,0 +1,9 @@
+# .NET / C# build artifacts
+**/bin/
+**/obj/
+**/Debug/
+**/Release/
+**/TestResults/
+*.user
+*.suo
+*.rsuser
