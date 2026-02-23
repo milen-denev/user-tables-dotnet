@@ -5,6 +5,7 @@ using System.Text.Json;
 using UserTables.Client.Attributes;
 using UserTables.Client.Configuration;
 using UserTables.Client.Internal;
+using UserTables.Client.Transport;
 
 namespace UserTables.Client.Tests;
 
@@ -491,5 +492,74 @@ public class LocalhostIntegrationTests
     {
         Open,
         CheckedOut
+    }
+}
+
+public class TransportJsonContextTests
+{
+    [Fact]
+    public void RowDataPayload_Serializes_DateTime_And_DateTimeOffset()
+    {
+        var payload = new RowDataPayload
+        {
+            Data = new Dictionary<string, object?>
+            {
+                ["CreatedAt"] = new DateTime(2026, 2, 23, 12, 34, 56, DateTimeKind.Utc),
+                ["UpdatedAt"] = new DateTimeOffset(2026, 2, 23, 12, 34, 56, TimeSpan.Zero)
+            }
+        };
+
+        var context = new UserTablesTransportJsonContext(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(payload, context.RowDataPayload);
+        var json = System.Text.Encoding.UTF8.GetString(bytes);
+
+        Assert.Contains("\"CreatedAt\":\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"UpdatedAt\":\"", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RowDataPayload_Serializes_Numeric_And_Scalar_Runtime_Types()
+    {
+        var payload = new RowDataPayload
+        {
+            Data = new Dictionary<string, object?>
+            {
+                ["CharValue"] = 'Z',
+                ["BoolValue"] = true,
+                ["ByteValue"] = (byte)7,
+                ["SByteValue"] = (sbyte)-7,
+                ["ShortValue"] = (short)-123,
+                ["UShortValue"] = (ushort)123,
+                ["IntValue"] = 12345,
+                ["UIntValue"] = (uint)12345,
+                ["LongValue"] = 1234567890123L,
+                ["ULongValue"] = 1234567890123UL,
+                ["FloatValue"] = 1.5f,
+                ["DoubleValue"] = 2.5d,
+                ["DecimalValue"] = 3.5m,
+                ["GuidValue"] = Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                ["TimeSpanValue"] = TimeSpan.FromMinutes(5)
+            }
+        };
+
+        var context = new UserTablesTransportJsonContext(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(payload, context.RowDataPayload);
+        var json = System.Text.Encoding.UTF8.GetString(bytes);
+
+        Assert.Contains("\"CharValue\":\"Z\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"BoolValue\":true", json, StringComparison.Ordinal);
+        Assert.Contains("\"ByteValue\":7", json, StringComparison.Ordinal);
+        Assert.Contains("\"SByteValue\":-7", json, StringComparison.Ordinal);
+        Assert.Contains("\"ShortValue\":-123", json, StringComparison.Ordinal);
+        Assert.Contains("\"UShortValue\":123", json, StringComparison.Ordinal);
+        Assert.Contains("\"IntValue\":12345", json, StringComparison.Ordinal);
+        Assert.Contains("\"UIntValue\":12345", json, StringComparison.Ordinal);
+        Assert.Contains("\"LongValue\":1234567890123", json, StringComparison.Ordinal);
+        Assert.Contains("\"ULongValue\":1234567890123", json, StringComparison.Ordinal);
+        Assert.Contains("\"FloatValue\":1.5", json, StringComparison.Ordinal);
+        Assert.Contains("\"DoubleValue\":2.5", json, StringComparison.Ordinal);
+        Assert.Contains("\"DecimalValue\":3.5", json, StringComparison.Ordinal);
+        Assert.Contains("\"GuidValue\":\"11111111-1111-1111-1111-111111111111\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"TimeSpanValue\":\"00:05:00\"", json, StringComparison.Ordinal);
     }
 }

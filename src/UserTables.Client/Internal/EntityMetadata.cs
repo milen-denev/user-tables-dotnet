@@ -13,6 +13,7 @@ internal sealed class EntityMetadata
     private static readonly Type[] ScalarTypes =
     [
         typeof(string),
+        typeof(char),
         typeof(bool),
         typeof(byte),
         typeof(sbyte),
