@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>Vynflow.UserTables.Client</PackageId>
-    <Version>1.0.5</Version>
+    <Version>1.0.6</Version>
     <Authors>Vynflow</Authors>
     <Description>Strict EF-style client for Vynflow User Tables API.</Description>
     <PackageProjectUrl>https://github.com/milen-denev/user-tables-dotnet</PackageProjectUrl>
