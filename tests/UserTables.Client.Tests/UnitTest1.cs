@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using UserTables.Client.Attributes;
 using UserTables.Client.Configuration;
 using UserTables.Client.Internal;
@@ -229,6 +230,49 @@ public class EntityMetadataJsonConversionTests
     }
 
     [Fact]
+    public void ToRowData_With_SourceGen_Options_Serializes_Custom_List()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            TypeInfoResolver = new StringOnlyResolver()
+        };
+
+        var metadata = EntityMetadata.Build(typeof(SourceGenEntity), new Dictionary<Type, EntityTypeMapBuilder>(), options);
+        var entity = new SourceGenEntity
+        {
+            Id = Guid.NewGuid(),
+            Metadata = [new SourceGenMetadata { Name = "tier", Value = "gold" }]
+        };
+
+        var row = metadata.ToRowData(entity);
+
+        var json = Assert.IsType<string>(row["Metadata"]);
+        Assert.Contains("\"name\":\"tier\"", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"value\":\"gold\"", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Materialize_With_SourceGen_Options_Deserializes_Custom_List()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            TypeInfoResolver = new StringOnlyResolver()
+        };
+
+        var metadata = EntityMetadata.Build(typeof(SourceGenEntity), new Dictionary<Type, EntityTypeMapBuilder>(), options);
+        var rowData = new Dictionary<string, object?>
+        {
+            ["Metadata"] = "[{\"name\":\"priority\",\"value\":\"high\"}]"
+        };
+
+        var entity = (SourceGenEntity)metadata.Materialize(Guid.NewGuid().ToString(), rowData, options);
+
+        Assert.Single(entity.Metadata);
+        Assert.Equal("priority", entity.Metadata[0].Name);
+        Assert.Equal("high", entity.Metadata[0].Value);
+    }
+
+    [Fact]
     public void ToRowData_Serializes_Enum_As_String()
     {
         var metadata = EntityMetadata.Build(typeof(CartEntity), new Dictionary<Type, EntityTypeMapBuilder>(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -296,6 +340,31 @@ public class EntityMetadataJsonConversionTests
     {
         public string? Comment { get; set; }
         public bool DiscountApplied { get; set; }
+    }
+
+    [UserTable("SOURCEGEN_TEST")]
+    private sealed class SourceGenEntity
+    {
+        public Guid Id { get; set; }
+        public List<SourceGenMetadata> Metadata { get; set; } = [];
+    }
+
+    private sealed class SourceGenMetadata
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Value { get; set; } = string.Empty;
+    }
+
+    private sealed class StringOnlyResolver : IJsonTypeInfoResolver
+    {
+        private readonly IJsonTypeInfoResolver _fallback = new DefaultJsonTypeInfoResolver();
+
+        public JsonTypeInfo? GetTypeInfo(Type type, JsonSerializerOptions options)
+        {
+            return type == typeof(string)
+                ? _fallback.GetTypeInfo(type, options)
+                : null;
+        }
     }
 }
 

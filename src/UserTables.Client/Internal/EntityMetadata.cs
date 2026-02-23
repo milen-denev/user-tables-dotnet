@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using UserTables.Client.Attributes;
 using UserTables.Client.Configuration;
 
@@ -42,7 +43,7 @@ internal sealed class EntityMetadata
         TableId = tableId;
         KeyProperty = keyProperty;
         _properties = properties;
-        _jsonOptions = jsonOptions;
+        _jsonOptions = CreateAutoJsonSerializerOptions(jsonOptions);
         _propertyToColumn = properties.ToDictionary(
             property => property.Property.Name,
             property => property.ColumnName,
@@ -142,7 +143,7 @@ internal sealed class EntityMetadata
             }
 
             var normalized = property.Converter?.FromProvider(value)
-                ?? ConvertToPropertyType(property.Property.PropertyType, value, jsonOptions, property.AutoJson);
+                ?? ConvertToPropertyType(property.Property.PropertyType, value, _jsonOptions, property.AutoJson);
             if (property.Property.CanWrite)
             {
                 property.Property.SetValue(instance, normalized);
@@ -292,6 +293,36 @@ internal sealed class EntityMetadata
         }
 
         return true;
+    }
+
+    private static JsonSerializerOptions CreateAutoJsonSerializerOptions(JsonSerializerOptions source)
+    {
+        var options = new JsonSerializerOptions(source);
+        var resolver = BuildResolverWithFallback(source);
+        options.TypeInfoResolver = resolver;
+        return options;
+    }
+
+    private static IJsonTypeInfoResolver BuildResolverWithFallback(JsonSerializerOptions source)
+    {
+        var resolvers = new List<IJsonTypeInfoResolver>();
+        if (source.TypeInfoResolverChain.Count > 0)
+        {
+            resolvers.AddRange(source.TypeInfoResolverChain);
+        }
+        else if (source.TypeInfoResolver is not null)
+        {
+            resolvers.Add(source.TypeInfoResolver);
+        }
+
+        if (!resolvers.Any(resolver => resolver is DefaultJsonTypeInfoResolver))
+        {
+            resolvers.Add(new DefaultJsonTypeInfoResolver());
+        }
+
+        return resolvers.Count == 1
+            ? resolvers[0]
+            : JsonTypeInfoResolver.Combine(resolvers.ToArray());
     }
 
     private static bool IsRequiredProperty(PropertyInfo property, NullabilityInfoContext nullability)
