@@ -147,6 +147,7 @@ public sealed class UserTableSet<TEntity> where TEntity : class, new()
     public async Task<List<TEntity>> ToListAsync(CancellationToken cancellationToken = default)
     {
         await _context.EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        var filtersJson = BuildFiltersJson();
 
         var maxRows = _query.Take is { } take
             ? Math.Max((_query.Skip ?? 0) + take, 0)
@@ -171,7 +172,7 @@ public sealed class UserTableSet<TEntity> where TEntity : class, new()
                     _query.ServerFilterColumn,
                     _query.ServerFilterValue,
                     _query.ServerFilterOperator,
-                    BuildFiltersJson(),
+                    filtersJson,
                     _query.ServerFilterCombinator,
                     _query.SortColumn,
                     _query.SortDirection),
@@ -259,6 +260,12 @@ public sealed class UserTableSet<TEntity> where TEntity : class, new()
     public async Task<int> CountAsync(CancellationToken cancellationToken = default)
     {
         await _context.EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        var filtersJson = BuildFiltersJson();
+
+        var compiledPredicates = _query.ClientPredicates
+            .Cast<Expression<Func<TEntity, bool>>>()
+            .Select(predicate => predicate.Compile())
+            .ToArray();
 
         var total = 0;
         var page = 1;
@@ -272,7 +279,7 @@ public sealed class UserTableSet<TEntity> where TEntity : class, new()
                         _query.ServerFilterColumn,
                         _query.ServerFilterValue,
                         _query.ServerFilterOperator,
-                        BuildFiltersJson(),
+                        filtersJson,
                         _query.ServerFilterCombinator,
                         _query.SortColumn,
                         _query.SortDirection),
@@ -293,9 +300,7 @@ public sealed class UserTableSet<TEntity> where TEntity : class, new()
                 foreach (var row in rows)
                 {
                     var entity = (TEntity)_metadata.Materialize(row.Id, row.Data, _context.ContextOptions.JsonSerializerOptions);
-                    var matches = _query.ClientPredicates
-                        .Cast<Expression<Func<TEntity, bool>>>()
-                        .All(predicate => predicate.Compile()(entity));
+                    var matches = compiledPredicates.All(predicate => predicate(entity));
                     if (matches)
                     {
                         total++;

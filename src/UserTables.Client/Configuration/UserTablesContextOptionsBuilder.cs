@@ -16,6 +16,10 @@ public sealed class UserTablesContextOptionsBuilder
     private bool _autoMigrationAddOnly;
     private int _retryCount = 2;
     private TimeSpan _retryBaseDelay = TimeSpan.FromMilliseconds(200);
+    private bool _useSharedHttpClientPool = true;
+    private int _maxConnectionsPerServer = 64;
+    private TimeSpan _pooledConnectionLifetime = TimeSpan.FromMinutes(10);
+    private TimeSpan _pooledConnectionIdleTimeout = TimeSpan.FromMinutes(2);
 
     public UserTablesContextOptionsBuilder UseBaseUrl(string baseUrl)
     {
@@ -72,6 +76,20 @@ public sealed class UserTablesContextOptionsBuilder
         return this;
     }
 
+    public UserTablesContextOptionsBuilder UseSharedHttpClientPool(bool enabled)
+    {
+        _useSharedHttpClientPool = enabled;
+        return this;
+    }
+
+    public UserTablesContextOptionsBuilder UseConnectionPool(int maxConnectionsPerServer, TimeSpan pooledConnectionLifetime, TimeSpan pooledConnectionIdleTimeout)
+    {
+        _maxConnectionsPerServer = Math.Max(1, maxConnectionsPerServer);
+        _pooledConnectionLifetime = pooledConnectionLifetime <= TimeSpan.Zero ? TimeSpan.FromMinutes(10) : pooledConnectionLifetime;
+        _pooledConnectionIdleTimeout = pooledConnectionIdleTimeout <= TimeSpan.Zero ? TimeSpan.FromMinutes(2) : pooledConnectionIdleTimeout;
+        return this;
+    }
+
     public UserTablesContextOptions Build()
     {
         return new UserTablesContextOptions
@@ -85,7 +103,11 @@ public sealed class UserTablesContextOptionsBuilder
             AllowAutoMigrationDanger = _allowAutoMigrationDanger,
             AutoMigrationAddOnly = _autoMigrationAddOnly,
             RetryCount = _retryCount,
-            RetryBaseDelay = _retryBaseDelay
+            RetryBaseDelay = _retryBaseDelay,
+            UseSharedHttpClientPool = _useSharedHttpClientPool,
+            MaxConnectionsPerServer = _maxConnectionsPerServer,
+            PooledConnectionLifetime = _pooledConnectionLifetime,
+            PooledConnectionIdleTimeout = _pooledConnectionIdleTimeout
         };
     }
 }

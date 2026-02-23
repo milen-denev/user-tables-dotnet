@@ -11,6 +11,18 @@ namespace UserTables.Client.Tests;
 public class PredicateTranslatorTests
 {
     [Fact]
+    public void ApiFilter_Serializes_To_Backend_Field_Names()
+    {
+        var json = JsonSerializer.Serialize(new[]
+        {
+            new UserTables.Client.Transport.ApiFilter("Active", "true", "eq"),
+            new UserTables.Client.Transport.ApiFilter("Email", "sales@", "starts_with")
+        });
+
+        Assert.Equal("[{\"column\":\"Active\",\"value\":\"true\",\"op\":\"eq\"},{\"column\":\"Email\",\"value\":\"sales@\",\"op\":\"starts_with\"}]", json);
+    }
+
+    [Fact]
     public void Translates_Equality_Expression_To_Server_Filter()
     {
         Expression<Func<LeadEntity, bool>> predicate = lead => lead.Name == "Acme";
@@ -59,6 +71,43 @@ public class PredicateTranslatorTests
         public required string Name { get; set; }
         public required string Email { get; set; }
         public bool Active { get; set; }
+    }
+}
+
+public class UserTablesContextOptionsBuilderTests
+{
+    [Fact]
+    public void Build_Uses_Default_Pooling_Settings()
+    {
+        var options = new UserTablesContextOptionsBuilder()
+            .UseBaseUrl("https://example.com")
+            .UseApiKey("api-key")
+            .UseBearerToken("token")
+            .UseDomainId("domain-id")
+            .Build();
+
+        Assert.True(options.UseSharedHttpClientPool);
+        Assert.Equal(64, options.MaxConnectionsPerServer);
+        Assert.Equal(TimeSpan.FromMinutes(10), options.PooledConnectionLifetime);
+        Assert.Equal(TimeSpan.FromMinutes(2), options.PooledConnectionIdleTimeout);
+    }
+
+    [Fact]
+    public void Build_Respects_Configured_Pooling_Settings()
+    {
+        var options = new UserTablesContextOptionsBuilder()
+            .UseBaseUrl("https://example.com")
+            .UseApiKey("api-key")
+            .UseBearerToken("token")
+            .UseDomainId("domain-id")
+            .UseSharedHttpClientPool(false)
+            .UseConnectionPool(128, TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(3))
+            .Build();
+
+        Assert.False(options.UseSharedHttpClientPool);
+        Assert.Equal(128, options.MaxConnectionsPerServer);
+        Assert.Equal(TimeSpan.FromMinutes(20), options.PooledConnectionLifetime);
+        Assert.Equal(TimeSpan.FromMinutes(3), options.PooledConnectionIdleTimeout);
     }
 }
 

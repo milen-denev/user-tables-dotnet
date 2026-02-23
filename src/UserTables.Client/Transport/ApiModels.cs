@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace UserTables.Client.Transport;
 
@@ -19,8 +20,11 @@ internal sealed record RowPageRequest(
     string? SortDirection);
 
 internal sealed record ApiFilter(
+    [property: JsonPropertyName("column")]
     string Column,
+    [property: JsonPropertyName("value")]
     string Value,
+    [property: JsonPropertyName("op")]
     string Operator = "eq");
 
 internal sealed record ApiColumn(

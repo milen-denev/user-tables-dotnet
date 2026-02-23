@@ -1,4 +1,6 @@
 using System;
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -9,59 +11,103 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.ObjectPool;
 using UserTables.Client.Configuration;
 
 namespace UserTables.Client.Transport;
 
 internal sealed class HttpUserTablesTransport : IUserTablesTransport
 {
+    private static readonly ConcurrentDictionary<string, HttpClient> SharedClientPool = new(StringComparer.Ordinal);
+    private static readonly ObjectPoolProvider QueryBuilderPoolProvider = new DefaultObjectPoolProvider();
+    private static readonly ObjectPool<StringBuilder> QueryBuilderPool = QueryBuilderPoolProvider.Create(new QueryStringBuilderPooledObjectPolicy());
     private readonly HttpClient _httpClient;
     private readonly UserTablesContextOptions _options;
+    private readonly UserTablesTransportJsonContext _jsonContext;
 
     public HttpUserTablesTransport(UserTablesContextOptions options)
     {
         _options = options;
-        _httpClient = options.HttpClient ?? new HttpClient(new HttpClientHandler
+        _httpClient = options.HttpClient ?? ResolveDefaultHttpClient(options);
+        _jsonContext = new UserTablesTransportJsonContext(options.JsonSerializerOptions);
+    }
+
+    private static HttpClient ResolveDefaultHttpClient(UserTablesContextOptions options)
+    {
+        if (!options.UseSharedHttpClientPool)
         {
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
-        });
+            return CreateHttpClient(options);
+        }
+
+        var key = BuildSharedClientKey(options);
+        return SharedClientPool.GetOrAdd(key, _ => CreateHttpClient(options));
+    }
+
+    private static string BuildSharedClientKey(UserTablesContextOptions options)
+    {
+        return string.Join("|",
+            options.BaseUri.Scheme,
+            options.BaseUri.Host,
+            options.BaseUri.Port.ToString(CultureInfo.InvariantCulture),
+            options.MaxConnectionsPerServer.ToString(CultureInfo.InvariantCulture),
+            options.PooledConnectionLifetime.TotalMilliseconds.ToString(CultureInfo.InvariantCulture),
+            options.PooledConnectionIdleTimeout.TotalMilliseconds.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static HttpClient CreateHttpClient(UserTablesContextOptions options)
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli,
+            PooledConnectionLifetime = options.PooledConnectionLifetime,
+            PooledConnectionIdleTimeout = options.PooledConnectionIdleTimeout,
+            MaxConnectionsPerServer = Math.Max(1, options.MaxConnectionsPerServer)
+        };
+
+        return new HttpClient(handler, disposeHandler: true);
     }
 
     public async Task<IReadOnlyList<ApiUserTable>> ListUserTablesAsync(string? search, CancellationToken cancellationToken)
     {
-        var query = new Dictionary<string, string?>
-        {
-            ["search"] = search,
-            ["page"] = "1",
-            ["per_page"] = "100"
-        };
-
-        var path = $"/api/user-tables{BuildQueryString(query)}";
+        var path = $"/api/user-tables{BuildListUserTablesQueryString(search)}";
         using var request = CreateRequest(HttpMethod.Get, path);
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
-        return ParseUserTables(json.RootElement);
+        var payload = await ParseJsonAsync(response, cancellationToken, _jsonContext.ApiUserTableListPayload).ConfigureAwait(false);
+        if (payload?.Data is null || payload.Data.Count == 0)
+        {
+            return [];
+        }
+
+        return payload.Data
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name))
+            .Select(item => new ApiUserTable(item.Id!, item.Name!))
+            .ToArray();
     }
 
     public async Task<ApiUserTable> CreateUserTableAsync(CreateUserTableRequest requestModel, CancellationToken cancellationToken)
     {
         using var request = CreateRequest(HttpMethod.Post, "/api/user-tables");
-        request.Content = BuildJsonContent(new Dictionary<string, object?>
+        request.Content = BuildJsonContent(new CreateUserTablePayload
         {
-            ["name"] = requestModel.Name,
-            ["description"] = requestModel.Description
-        });
+            Name = requestModel.Name,
+            Description = requestModel.Description
+        }, _jsonContext.CreateUserTablePayload);
 
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
-        return ParseSingleUserTable(json.RootElement)
-            ?? throw new InvalidOperationException("API response did not include a user table payload.");
+        var payload = await ParseJsonAsync(response, cancellationToken, _jsonContext.ApiUserTableSinglePayload).ConfigureAwait(false);
+        if (payload?.Data is null || string.IsNullOrWhiteSpace(payload.Data.Id) || string.IsNullOrWhiteSpace(payload.Data.Name))
+        {
+            throw new InvalidOperationException("API response did not include a user table payload.");
+        }
+
+        return new ApiUserTable(payload.Data.Id, payload.Data.Name);
     }
 
     public async Task<ApiRow?> GetRowAsync(string tableId, string rowId, CancellationToken cancellationToken)
@@ -81,20 +127,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
 
     public async Task<IReadOnlyList<ApiRow>> ListRowsAsync(string tableId, RowPageRequest request, CancellationToken cancellationToken)
     {
-        var query = new Dictionary<string, string?>
-        {
-            ["page"] = request.Page.ToString(CultureInfo.InvariantCulture),
-            ["per_page"] = request.PerPage.ToString(CultureInfo.InvariantCulture),
-            ["filter_col"] = request.FilterColumn,
-            ["filter_value"] = request.FilterValue,
-            ["filter_op"] = request.FilterOperator,
-            ["filters"] = request.FiltersJson,
-            ["filter_combinator"] = request.FilterCombinator,
-            ["sort_col"] = request.SortColumn,
-            ["sort_dir"] = request.SortDirection
-        };
-
-        var path = $"/api/user-tables/{tableId}/rows{BuildQueryString(query)}";
+        var path = $"/api/user-tables/{tableId}/rows{BuildListRowsQueryString(request)}";
         using var httpRequest = CreateRequest(HttpMethod.Get, path);
         using var response = await SendWithRetryAsync(httpRequest, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
@@ -106,7 +139,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
     public async Task<ApiRow> CreateRowAsync(string tableId, IReadOnlyDictionary<string, object?> data, CancellationToken cancellationToken)
     {
         using var request = CreateRequest(HttpMethod.Post, $"/api/user-tables/{tableId}/rows");
-        request.Content = BuildJsonContent(new Dictionary<string, object?> { ["data"] = data });
+        request.Content = BuildJsonContent(new RowDataPayload { Data = data }, _jsonContext.RowDataPayload);
 
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
@@ -119,7 +152,7 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
     public async Task<ApiRow> PatchRowAsync(string tableId, string rowId, IReadOnlyDictionary<string, object?> data, CancellationToken cancellationToken)
     {
         using var request = CreateRequest(HttpMethod.Patch, $"/api/user-tables/{tableId}/rows/{rowId}");
-        request.Content = BuildJsonContent(new Dictionary<string, object?> { ["data"] = data });
+        request.Content = BuildJsonContent(new RowDataPayload { Data = data }, _jsonContext.RowDataPayload);
 
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
@@ -142,27 +175,36 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
-        return ParseColumns(json.RootElement);
+        var payload = await ParseJsonAsync(response, cancellationToken, _jsonContext.ApiColumnListPayload).ConfigureAwait(false);
+        if (payload?.Data is null || payload.Data.Count == 0)
+        {
+            return [];
+        }
+
+        return payload.Data
+            .Select(MapColumnPayload)
+            .Where(column => column is not null)
+            .Cast<ApiColumn>()
+            .ToArray();
     }
 
     public async Task<ApiColumn> CreateColumnAsync(string tableId, CreateColumnRequest requestModel, CancellationToken cancellationToken)
     {
         using var request = CreateRequest(HttpMethod.Post, $"/api/user-tables/{tableId}/columns");
-        request.Content = BuildJsonContent(new Dictionary<string, object?>
+        request.Content = BuildJsonContent(new CreateColumnPayload
         {
-            ["name"] = requestModel.Name,
-            ["description"] = requestModel.Description,
-            ["value_type"] = requestModel.ValueType,
-            ["required"] = requestModel.Required,
-            ["is_active"] = requestModel.IsActive
-        });
+            Name = requestModel.Name,
+            Description = requestModel.Description,
+            ValueType = requestModel.ValueType,
+            Required = requestModel.Required,
+            IsActive = requestModel.IsActive
+        }, _jsonContext.CreateColumnPayload);
 
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response).ConfigureAwait(false);
 
-        using var json = await ParseJsonDocumentAsync(response, cancellationToken).ConfigureAwait(false);
-        return ParseSingleColumn(json.RootElement)
+        var payload = await ParseJsonAsync(response, cancellationToken, _jsonContext.ApiColumnSinglePayload).ConfigureAwait(false);
+        return MapColumnPayload(payload?.Data)
             ?? throw new InvalidOperationException("API response did not include a column payload.");
     }
 
@@ -180,8 +222,10 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         {
             try
             {
-                var clonedRequest = await CloneRequestAsync(request, cancellationToken).ConfigureAwait(false);
-                var response = await _httpClient.SendAsync(clonedRequest, cancellationToken).ConfigureAwait(false);
+                var response = attempt == 1
+                    ? await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false)
+                    : await SendRetryAttemptAsync(request, cancellationToken).ConfigureAwait(false);
+
                 if (!IsTransientStatus(response.StatusCode) || attempt == attempts)
                 {
                     return response;
@@ -200,6 +244,12 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         }
 
         throw new InvalidOperationException("Unreachable retry state.");
+    }
+
+    private async Task<HttpResponseMessage> SendRetryAttemptAsync(HttpRequestMessage originalRequest, CancellationToken cancellationToken)
+    {
+        using var clonedRequest = await CloneRequestAsync(originalRequest, cancellationToken).ConfigureAwait(false);
+        return await _httpClient.SendAsync(clonedRequest, cancellationToken).ConfigureAwait(false);
     }
 
     private TimeSpan BackoffDelay(int attempt)
@@ -246,10 +296,15 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         return request;
     }
 
-    private StringContent BuildJsonContent(object payload)
+    private static HttpContent BuildJsonContent<TPayload>(TPayload payload, JsonTypeInfo<TPayload> typeInfo)
     {
-        var json = JsonSerializer.Serialize(payload, _options.JsonSerializerOptions);
-        return new StringContent(json, Encoding.UTF8, "application/json");
+        var json = JsonSerializer.SerializeToUtf8Bytes(payload, typeInfo);
+        var content = new ByteArrayContent(json);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json")
+        {
+            CharSet = Encoding.UTF8.WebName
+        };
+        return content;
     }
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response)
@@ -260,8 +315,17 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         }
 
         var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+        var request = response.RequestMessage;
+        var method = request?.Method.Method ?? "UNKNOWN";
+        var uri = request?.RequestUri?.ToString() ?? "<unknown>";
+
+        Console.Error.WriteLine(
+            $"[UserTables.Client] API failure {(int)response.StatusCode} ({response.StatusCode})\n" +
+            $"Request: {method} {uri}\n" +
+            $"Response body: {body}");
+
         throw new UserTablesApiException(
-            $"User Tables API call failed with status {(int)response.StatusCode} ({response.StatusCode}).",
+            $"User Tables API call failed with status {(int)response.StatusCode} ({response.StatusCode}) for {method} {uri}.",
             response.StatusCode,
             body);
     }
@@ -271,6 +335,38 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         var payload = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
         var decoded = DecodeResponsePayload(payload, response.Content.Headers.ContentEncoding);
         return JsonDocument.Parse(decoded);
+    }
+
+    private static async Task<T?> ParseJsonAsync<T>(HttpResponseMessage response, CancellationToken cancellationToken, JsonTypeInfo<T> typeInfo)
+    {
+        var payload = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+        var decoded = DecodeResponsePayload(payload, response.Content.Headers.ContentEncoding);
+        return JsonSerializer.Deserialize(decoded, typeInfo);
+    }
+
+    private static ApiColumn? MapColumnPayload(ApiColumnPayload? payload)
+    {
+        if (payload is null || string.IsNullOrWhiteSpace(payload.Id) || string.IsNullOrWhiteSpace(payload.Name))
+        {
+            return null;
+        }
+
+        var typeKey = payload.ValueTypeKey;
+        if (string.IsNullOrWhiteSpace(typeKey) && payload.ValueType.ValueKind != JsonValueKind.Undefined)
+        {
+            typeKey = payload.ValueType.ValueKind switch
+            {
+                JsonValueKind.String => payload.ValueType.GetString(),
+                _ => payload.ValueType.ToString()
+            };
+        }
+
+        return new ApiColumn(
+            payload.Id,
+            payload.Name,
+            NormalizeValueType(typeKey),
+            payload.Required == true,
+            payload.IsAutoRelation == true);
     }
 
     private static byte[] DecodeResponsePayload(byte[] payload, ICollection<string> encodings)
@@ -327,18 +423,116 @@ internal sealed class HttpUserTablesTransport : IUserTablesTransport
         using var input = new MemoryStream(payload);
         using var decoded = streamFactory(input);
         using var output = new MemoryStream();
-        decoded.CopyTo(output);
+
+        var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
+        try
+        {
+            while (true)
+            {
+                var read = decoded.Read(buffer, 0, buffer.Length);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                output.Write(buffer, 0, read);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+
         return output.ToArray();
     }
 
-    private static string BuildQueryString(IReadOnlyDictionary<string, string?> query)
+    private static string BuildListUserTablesQueryString(string? search)
     {
-        var pairs = query
-            .Where(item => !string.IsNullOrWhiteSpace(item.Value))
-            .Select(item => $"{Uri.EscapeDataString(item.Key)}={Uri.EscapeDataString(item.Value!)}")
-            .ToArray();
+        var builder = RentQueryBuilder();
+        try
+        {
+            var hasAny = false;
+            AppendQueryPair(builder, ref hasAny, "search", search);
+            AppendQueryPair(builder, ref hasAny, "page", "1");
+            AppendQueryPair(builder, ref hasAny, "per_page", "100");
+            return hasAny ? builder.ToString() : string.Empty;
+        }
+        finally
+        {
+            ReturnQueryBuilder(builder);
+        }
+    }
 
-        return pairs.Length == 0 ? string.Empty : $"?{string.Join("&", pairs)}";
+    private static string BuildListRowsQueryString(RowPageRequest request)
+    {
+        var builder = RentQueryBuilder();
+        try
+        {
+            var hasAny = false;
+            AppendQueryPair(builder, ref hasAny, "page", request.Page.ToString(CultureInfo.InvariantCulture));
+            AppendQueryPair(builder, ref hasAny, "per_page", request.PerPage.ToString(CultureInfo.InvariantCulture));
+            AppendQueryPair(builder, ref hasAny, "filter_col", request.FilterColumn);
+            AppendQueryPair(builder, ref hasAny, "filter_value", request.FilterValue);
+            AppendQueryPair(builder, ref hasAny, "filter_op", request.FilterOperator);
+            AppendQueryPair(builder, ref hasAny, "filters", request.FiltersJson);
+            AppendQueryPair(builder, ref hasAny, "filter_combinator", request.FilterCombinator);
+            AppendQueryPair(builder, ref hasAny, "sort_col", request.SortColumn);
+            AppendQueryPair(builder, ref hasAny, "sort_dir", request.SortDirection);
+            return hasAny ? builder.ToString() : string.Empty;
+        }
+        finally
+        {
+            ReturnQueryBuilder(builder);
+        }
+    }
+
+    private static void AppendQueryPair(StringBuilder builder, ref bool hasAny, string key, string? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        var valueSpan = value.AsSpan().Trim();
+        if (valueSpan.IsEmpty)
+        {
+            return;
+        }
+
+        builder.Append(hasAny ? '&' : '?');
+        builder.Append(Uri.EscapeDataString(key));
+        builder.Append('=');
+        builder.Append(Uri.EscapeDataString(valueSpan));
+        hasAny = true;
+    }
+
+    private static StringBuilder RentQueryBuilder()
+    {
+        return QueryBuilderPool.Get();
+    }
+
+    private static void ReturnQueryBuilder(StringBuilder builder)
+    {
+        QueryBuilderPool.Return(builder);
+    }
+
+    private sealed class QueryStringBuilderPooledObjectPolicy : PooledObjectPolicy<StringBuilder>
+    {
+        public override StringBuilder Create()
+        {
+            return new StringBuilder(256);
+        }
+
+        public override bool Return(StringBuilder obj)
+        {
+            if (obj.Capacity > 8 * 1024)
+            {
+                return false;
+            }
+
+            obj.Clear();
+            return true;
+        }
     }
 
     private static IReadOnlyList<ApiUserTable> ParseUserTables(JsonElement root)

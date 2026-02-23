@@ -16,4 +16,8 @@ public sealed class UserTablesContextOptions
     public bool AutoMigrationAddOnly { get; init; }
     public int RetryCount { get; init; } = 2;
     public TimeSpan RetryBaseDelay { get; init; } = TimeSpan.FromMilliseconds(200);
+    public bool UseSharedHttpClientPool { get; init; } = true;
+    public int MaxConnectionsPerServer { get; init; } = 64;
+    public TimeSpan PooledConnectionLifetime { get; init; } = TimeSpan.FromMinutes(10);
+    public TimeSpan PooledConnectionIdleTimeout { get; init; } = TimeSpan.FromMinutes(2);
 }

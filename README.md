@@ -26,6 +26,9 @@
   - Fluent `OnModelCreating` overrides (`ToTable`, `HasKey`, `Property`, `HasColumnName`, `HasConverter`)
 - HTTP transport with auth headers (`Authorization`, `X-API-Key`, `X-Domain-ID`)
 - Built-in retry/backoff for transient HTTP failures (`408`, `429`, `5xx`, network errors)
+- Shared HTTP connection pooling (enabled by default for internally created clients)
+- Lightweight object pooling for query-string builders in transport hot path
+- Pooled decompression buffers (`ArrayPool<byte>`) in response decode path
 - Typed API exception: `UserTablesApiException`
 - Optional startup schema auto-migration behind danger flag
 
@@ -39,6 +42,10 @@ var options = new UserTablesContextOptionsBuilder()
     .UseDomainId("DOMAIN_UUID")
     .AllowAutoMigrationDanger(false)
     .UseRetryPolicy(retryCount: 3, baseDelay: TimeSpan.FromMilliseconds(200))
+  .UseConnectionPool(
+    maxConnectionsPerServer: 128,
+    pooledConnectionLifetime: TimeSpan.FromMinutes(10),
+    pooledConnectionIdleTimeout: TimeSpan.FromMinutes(2))
     .Build();
 
 await using var db = new MyContext(options);
@@ -49,6 +56,14 @@ var activeRows = await db.Leads
   .Take(25)
   .ToListAsync();
 ```
+
+## Performance and pooling
+
+By default, if you do not pass a custom `HttpClient`, the client reuses a shared pooled `HttpClient` per host + pool settings.
+
+- `UseSharedHttpClientPool(true|false)` toggles shared client pooling (default: `true`)
+- `UseConnectionPool(maxConnectionsPerServer, pooledConnectionLifetime, pooledConnectionIdleTimeout)` tunes transport pool behavior
+- `UseHttpClient(...)` overrides internal client creation (use this when integrating with `IHttpClientFactory`)
 
 ## Auto migration (danger)
 
