@@ -34,6 +34,7 @@ public class PredicateTranslatorTests
         Assert.NotNull(translated);
         Assert.Equal("Name", translated?.Column);
         Assert.Equal("Acme", translated?.Value);
+        Assert.Equal("eq", translated?.Operator);
     }
 
     [Fact]
@@ -56,6 +57,46 @@ public class PredicateTranslatorTests
         Assert.NotNull(translated);
         Assert.Equal("Name", translated?.Column);
         Assert.Equal("Acme", translated?.Value);
+        Assert.Equal("eq", translated?.Operator);
+    }
+
+    [Fact]
+    public void Translates_Greater_Than_Expression_To_Server_Filter()
+    {
+        Expression<Func<LeadEntity, bool>> predicate = lead => lead.YearlyRevenue > 179_900_000;
+
+        var translated = PredicateTranslator.TryTranslateFilter(predicate);
+
+        Assert.NotNull(translated);
+        Assert.Equal("YearlyRevenue", translated?.Column);
+        Assert.Equal("179900000", translated?.Value);
+        Assert.Equal("gt", translated?.Operator);
+    }
+
+    [Fact]
+    public void Translates_Reversed_Greater_Than_Expression_To_Server_Filter()
+    {
+        Expression<Func<LeadEntity, bool>> predicate = lead => 179_900_000 < lead.YearlyRevenue;
+
+        var translated = PredicateTranslator.TryTranslateFilter(predicate);
+
+        Assert.NotNull(translated);
+        Assert.Equal("YearlyRevenue", translated?.Column);
+        Assert.Equal("179900000", translated?.Value);
+        Assert.Equal("gt", translated?.Operator);
+    }
+
+    [Fact]
+    public void Translates_Not_Equal_Expression_To_Server_Filter()
+    {
+        Expression<Func<LeadEntity, bool>> predicate = lead => lead.Active != true;
+
+        var translated = PredicateTranslator.TryTranslateFilter(predicate);
+
+        Assert.NotNull(translated);
+        Assert.Equal("Active", translated?.Column);
+        Assert.Equal("True", translated?.Value);
+        Assert.Equal("neq", translated?.Operator);
     }
 
     [Fact]
@@ -73,6 +114,7 @@ public class PredicateTranslatorTests
         public required string Name { get; set; }
         public required string Email { get; set; }
         public bool Active { get; set; }
+        public long YearlyRevenue { get; set; }
     }
 }
 

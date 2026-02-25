@@ -41,7 +41,7 @@ public sealed class UserTableSet<TEntity> where TEntity : class, new()
             {
                 ServerFilterColumn = translated.Value.Column,
                 ServerFilterValue = translated.Value.Value,
-                ServerFilterOperator = "eq",
+                ServerFilterOperator = translated.Value.Operator,
                 ClientPredicates = predicates
             });
         }

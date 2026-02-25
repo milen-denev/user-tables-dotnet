@@ -6,7 +6,7 @@ namespace UserTables.Client.Query;
 
 internal static class PredicateTranslator
 {
-    public static (string Column, string Value)? TryTranslateFilter<TEntity>(Expression<Func<TEntity, bool>> predicate)
+    public static (string Column, string Value, string Operator)? TryTranslateFilter<TEntity>(Expression<Func<TEntity, bool>> predicate)
     {
         if (TryTranslateExpression(predicate.Body, out var translated))
         {
@@ -15,26 +15,32 @@ internal static class PredicateTranslator
 
         if (TryGetMember(predicate.Body, out var memberName))
         {
-            return (memberName, "true");
+            return (memberName, "true", "eq");
         }
 
         return null;
     }
 
-    private static bool TryTranslateExpression(Expression expression, out (string Column, string Value) translated)
+    private static bool TryTranslateExpression(Expression expression, out (string Column, string Value, string Operator) translated)
     {
-        if (expression is BinaryExpression binary && binary.NodeType == ExpressionType.Equal)
+        if (expression is BinaryExpression binary)
         {
-            if (TryGetMember(binary.Left, out var leftMember) && TryGetConstant(binary.Right, out var rightValue))
+            if (TryMapOperator(binary.NodeType, out var op))
             {
-                translated = (leftMember, ToInvariantString(rightValue));
-                return true;
-            }
+                if (TryGetMember(binary.Left, out var leftMember) && TryGetConstant(binary.Right, out var rightValue))
+                {
+                    translated = (leftMember, ToInvariantString(rightValue), op);
+                    return true;
+                }
 
-            if (TryGetMember(binary.Right, out var rightMember) && TryGetConstant(binary.Left, out var leftValue))
-            {
-                translated = (rightMember, ToInvariantString(leftValue));
-                return true;
+                if (TryGetMember(binary.Right, out var rightMember) && TryGetConstant(binary.Left, out var leftValue))
+                {
+                    if (TryReverseOperator(op, out var reversedOp))
+                    {
+                        translated = (rightMember, ToInvariantString(leftValue), reversedOp);
+                        return true;
+                    }
+                }
             }
         }
 
@@ -53,6 +59,60 @@ internal static class PredicateTranslator
 
         translated = default;
         return false;
+    }
+
+    private static bool TryMapOperator(ExpressionType nodeType, out string op)
+    {
+        switch (nodeType)
+        {
+            case ExpressionType.Equal:
+                op = "eq";
+                return true;
+            case ExpressionType.NotEqual:
+                op = "neq";
+                return true;
+            case ExpressionType.GreaterThan:
+                op = "gt";
+                return true;
+            case ExpressionType.GreaterThanOrEqual:
+                op = "gte";
+                return true;
+            case ExpressionType.LessThan:
+                op = "lt";
+                return true;
+            case ExpressionType.LessThanOrEqual:
+                op = "lte";
+                return true;
+            default:
+                op = string.Empty;
+                return false;
+        }
+    }
+
+    private static bool TryReverseOperator(string op, out string reversed)
+    {
+        switch (op)
+        {
+            case "eq":
+            case "neq":
+                reversed = op;
+                return true;
+            case "gt":
+                reversed = "lt";
+                return true;
+            case "gte":
+                reversed = "lte";
+                return true;
+            case "lt":
+                reversed = "gt";
+                return true;
+            case "lte":
+                reversed = "gte";
+                return true;
+            default:
+                reversed = string.Empty;
+                return false;
+        }
     }
 
     public static string TranslateOrderBy<TEntity>(Expression<Func<TEntity, object?>> selector)
