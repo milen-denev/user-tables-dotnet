@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Linq.Expressions;
+using UserTables.Client.Internal;
 
 namespace UserTables.Client.Query;
 
@@ -124,6 +125,11 @@ internal static class PredicateTranslator
         }
 
         return member.Member.Name;
+    }
+
+    public static string TranslateOrderBy<TEntity>(Expression<Func<TEntity, object?>> selector, EntityMetadata metadata)
+    {
+        return metadata.ResolveColumnName(TranslateOrderBy(selector));
     }
 
     private static bool TryGetMember(Expression expression, out string memberName)

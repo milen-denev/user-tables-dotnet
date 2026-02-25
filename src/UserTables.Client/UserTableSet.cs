@@ -35,13 +35,18 @@ public sealed class UserTableSet<TEntity> where TEntity : class, new()
         predicates.Add(predicate);
 
         var translated = PredicateTranslator.TryTranslateFilter(predicate);
-        if (translated is not null && string.IsNullOrWhiteSpace(_query.ServerFilterColumn))
+        if (translated is not null)
         {
+            var resolvedColumn = _metadata.ResolveColumnName(translated.Value.Column);
+            var filters = _query.ServerFilters.ToList();
+            filters.Add(new ApiFilter(resolvedColumn, translated.Value.Value, translated.Value.Operator));
+
             return new UserTableSet<TEntity>(_context, _metadata, _tracking, _query with
             {
-                ServerFilterColumn = translated.Value.Column,
-                ServerFilterValue = translated.Value.Value,
-                ServerFilterOperator = translated.Value.Operator,
+                ServerFilters = filters,
+                ServerFilterColumn = filters.Count == 1 ? resolvedColumn : _query.ServerFilterColumn,
+                ServerFilterValue = filters.Count == 1 ? translated.Value.Value : _query.ServerFilterValue,
+                ServerFilterOperator = filters.Count == 1 ? translated.Value.Operator : _query.ServerFilterOperator,
                 ClientPredicates = predicates
             });
         }
@@ -54,7 +59,7 @@ public sealed class UserTableSet<TEntity> where TEntity : class, new()
         var clientOrder = new List<ClientOrderBy> { new(selector, false) };
         return new UserTableSet<TEntity>(_context, _metadata, _tracking, _query with
         {
-            SortColumn = PredicateTranslator.TranslateOrderBy(selector),
+            SortColumn = PredicateTranslator.TranslateOrderBy(selector, _metadata),
             SortDirection = "asc",
             ClientOrderBys = clientOrder
         });
@@ -65,7 +70,7 @@ public sealed class UserTableSet<TEntity> where TEntity : class, new()
         var clientOrder = new List<ClientOrderBy> { new(selector, true) };
         return new UserTableSet<TEntity>(_context, _metadata, _tracking, _query with
         {
-            SortColumn = PredicateTranslator.TranslateOrderBy(selector),
+            SortColumn = PredicateTranslator.TranslateOrderBy(selector, _metadata),
             SortDirection = "desc",
             ClientOrderBys = clientOrder
         });
